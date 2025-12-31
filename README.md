@@ -10,5 +10,8 @@ The user can scroll around a large images (consisting of many small 128x64px-til
 - **OK Button**: Appears when there is an annotation for the current image position
 - **Back Button** (hold or press): Exit
 
+## Example data
+We start with a black-and-white PNG squaredd `640px' image showing most important stars (magnitude 1-6) of the Northern hemnisphere as black symbols. Magnitude 6 is a single dot. 
+
 ## Version history
 See [changelog.md](changelog.md)
