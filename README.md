@@ -1,7 +1,9 @@
 # mitzi-scroller
-A simple Flipper Zero to view annotated, tiled images
+A simple Flipper Zero to view annotated, tiled images.  
 
 <img alt="Main Screen"  src="screenshots/MainScreen.png" width="40%" />
+
+The user can scroll around a large images (consisting of many small 128x64px-tiles saved in the `assets/`-folder). There is a CSV file which specifies the arrangement of the tiles. Another CSV-file specifies tile-names, coordinates on the tiles, and text-annotations. The user sees a 8px circle in the middle of the screen as cursor. Whenever the cursor is on a coordinate with an annotation, the text is shown on top left of the screen.
 
 ## Usage
 - **Arrow Keys**: Move cursor around
