@@ -34,6 +34,7 @@
 #include <furi.h>                               // Core Flipper OS functions (includes FuriString)
 #include <furi_hal.h>                           // Hardware abstraction layer
 #include <gui/gui.h>                            // GUI rendering and canvas
+#include <gui/icon.h>                           // Icon/image loading
 #include <input/input.h>                        // Input handling (buttons)
 #include <storage/storage.h>                    // SD card file access
 
@@ -124,6 +125,110 @@ static int row_col_to_tile_num(int row, int col) {
     return row * TILE_COLS + col;
 }
 
+/**
+ * @brief Load and draw a tile bitmap from file
+ * 
+ * Loads a 128x64 monochrome BMP file and draws it to the canvas.
+ * BMP files should be 1-bit (monochrome) format.
+ * 
+ * @param canvas    Canvas to draw on
+ * @param tile_num  Tile number (0-49)
+ * @param x         X position to draw at
+ * @param y         Y position to draw at
+ * @return          true if loaded and drawn successfully
+ */
+static bool draw_tile_bmp(Canvas* canvas, int tile_num, int x, int y) {
+    // Build file path: /ext/apps_assets/mitzi_scroller/XX.bmp
+    FuriString* path = furi_string_alloc();
+    furi_string_printf(path, EXT_PATH("apps_assets/mitzi_scroller/%02d.bmp"), tile_num);
+    
+    Storage* storage = furi_record_open(RECORD_STORAGE);
+    File* file = storage_file_alloc(storage);
+    
+    bool success = false;
+    
+    FURI_LOG_I("Scroller", "Attempting to load: %s", furi_string_get_cstr(path));
+    
+    if(!storage_file_open(file, furi_string_get_cstr(path), FSAM_READ, FSOM_OPEN_EXISTING)) {
+        FURI_LOG_E("Scroller", "Failed to open file: %s", furi_string_get_cstr(path));
+        storage_file_free(file);
+        furi_record_close(RECORD_STORAGE);
+        furi_string_free(path);
+        return false;
+    }
+    
+    FURI_LOG_I("Scroller", "File opened successfully");
+    
+    // Read BMP header (first 54 bytes for standard BMP)
+    uint8_t header[54];
+    size_t bytes_read = storage_file_read(file, header, 54);
+    FURI_LOG_I("Scroller", "Read %zu bytes of header", bytes_read);
+    
+    if(bytes_read == 54) {
+        // Verify BMP signature
+        if(header[0] == 'B' && header[1] == 'M') {
+            FURI_LOG_I("Scroller", "Valid BMP signature");
+            
+            // Get image dimensions from header
+            int32_t width = header[18] | (header[19] << 8) | (header[20] << 16) | (header[21] << 24);
+            int32_t height = header[22] | (header[23] << 8) | (header[24] << 16) | (header[25] << 24);
+            uint16_t bpp = header[28] | (header[29] << 8); // bits per pixel
+            uint32_t data_offset = header[10] | (header[11] << 8) | (header[12] << 16) | (header[13] << 24);
+            
+            FURI_LOG_I("Scroller", "BMP: %ldx%ld, %dbpp, data offset: %lu", width, height, bpp, data_offset);
+            
+            // We expect 128x64, 1-bit BMP
+            if(width == TILE_WIDTH && height == TILE_HEIGHT && bpp == 1) {
+                FURI_LOG_I("Scroller", "BMP format correct, loading pixels...");
+                
+                // Seek to pixel data
+                storage_file_seek(file, data_offset, true);
+                
+                // Calculate row size (must be multiple of 4 bytes)
+                int row_size = ((width + 31) / 32) * 4;
+                FURI_LOG_I("Scroller", "Row size: %d bytes", row_size);
+                
+                // BMP stores rows bottom-to-top, so we read in reverse
+                uint8_t row_buffer[row_size];
+                
+                for(int row = height - 1; row >= 0; row--) {
+                    if(storage_file_read(file, row_buffer, row_size) == (size_t)row_size) {
+                        // Draw pixels for this row
+                        for(int col = 0; col < width; col++) {
+                            int byte_idx = col / 8;
+                            int bit_idx = 7 - (col % 8);
+                            bool pixel = (row_buffer[byte_idx] >> bit_idx) & 1;
+                            
+                            // Draw pixel (1 = black in monochrome BMP)
+                            if(pixel) {
+                                canvas_draw_dot(canvas, x + col, y + row);
+                            }
+                        }
+                    } else {
+                        FURI_LOG_E("Scroller", "Failed to read row %d", row);
+                        break;
+                    }
+                }
+                FURI_LOG_I("Scroller", "BMP loaded successfully!");
+                success = true;
+            } else {
+                FURI_LOG_E("Scroller", "Wrong BMP format: %ldx%ld, %dbpp (expected 128x64, 1bpp)", width, height, bpp);
+            }
+        } else {
+            FURI_LOG_E("Scroller", "Invalid BMP signature: 0x%02X 0x%02X", header[0], header[1]);
+        }
+    } else {
+        FURI_LOG_E("Scroller", "Failed to read header (got %zu bytes)", bytes_read);
+    }
+    
+    storage_file_close(file);
+    storage_file_free(file);
+    furi_record_close(RECORD_STORAGE);
+    furi_string_free(path);
+    
+    return success;
+}
+
 /* ============================================================================
  * HELPER FUNCTIONS - FILE LOADING
  * ============================================================================ */
@@ -144,7 +249,7 @@ static bool load_annotations(ScrollerState* state, Storage* storage) {
     state->annotation_count = 0;
     
     // Try to open annotations.csv
-    if(!storage_file_open(file, APP_DATA_PATH("scroller") "/assets/annotations.csv", FSAM_READ, FSOM_OPEN_EXISTING)) {
+    if(!storage_file_open(file, EXT_PATH("apps_assets/mitzi_scroller/annotations.csv"), FSAM_READ, FSOM_OPEN_EXISTING)) {
         FURI_LOG_E("Scroller", "Failed to open annotations.csv");
         storage_file_free(file);
         return false;
@@ -315,14 +420,15 @@ static void scroller_draw_callback(Canvas* canvas, void* ctx) {
             int screen_x = (int)(col * TILE_WIDTH - state->camera_x);
             int screen_y = (int)(row * TILE_HEIGHT - state->camera_y);
             
-            // Draw tile border (debug)
-            canvas_draw_frame(canvas, screen_x, screen_y, TILE_WIDTH, TILE_HEIGHT);
-            
-            // Draw tile number
-            canvas_set_font(canvas, FontSecondary);
-            char tile_text[16];
-            snprintf(tile_text, sizeof(tile_text), "%02d", tile_num);
-            canvas_draw_str(canvas, screen_x + 2, screen_y + 8, tile_text);
+            // Try to load and draw the BMP file
+            if(!draw_tile_bmp(canvas, tile_num, screen_x, screen_y)) {
+                // Fallback: draw tile border and number if BMP not found
+                canvas_draw_frame(canvas, screen_x, screen_y, TILE_WIDTH, TILE_HEIGHT);
+                canvas_set_font(canvas, FontSecondary);
+                char tile_text[16];
+                snprintf(tile_text, sizeof(tile_text), "%02d", tile_num);
+                canvas_draw_str(canvas, screen_x + 2, screen_y + 8, tile_text);
+            }
         }
     }
     
