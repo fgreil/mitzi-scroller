@@ -36,6 +36,9 @@ App(
     # Path to the app icon displayed in the menu
     fap_icon_assets="images",
 	
+	# Automatically copy assets folder to /ext/apps_data/scroller/ on Flipper
+	fap_file_assets="assets",
+	
     # Symbol name for generated icon header (generates puck_icons.h)
     fap_icon_assets_symbol="scroller",
  
