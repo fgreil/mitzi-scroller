@@ -7,4 +7,15 @@
   * Mag 5: 2 px square
   * Mag 6: single-pixel dot
 
-You can use https://splitter.imageonline.co/ to split images if you do not have [imagemagick](https://imagemagick.org) installed.
+You can use https://splitter.imageonline.co/ to split images if you do not have [imagemagick](https://imagemagick.org) installed where you could most likely do just this:
+
+```
+convert starmap_input_file.png \
+  -resize 640x640! \
+  -threshold 50% \
+  -crop 128x64 \
+  +repage \
+  -set filename:tile "%02d" \
+  +adjoin \
+  "%[filename:tile].png"
+```
