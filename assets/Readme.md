@@ -20,8 +20,8 @@ convert starmap_input_file.png \
   "%[filename:tile].png"
 ```
 
-The following PowerShell-script convert all PNGs into BMPs:
+The following PowerShell-script converts a `PNG`-file to `BMP`-file:
+```Add-Type -AssemblyName System.Drawing; Get-ChildItem *.png | Where-Object { $_.BaseName -match '^\d+$' } | Sort-Object { [int]$_.BaseName } | ForEach-Object { $p=$_.FullName; $b=[System.Drawing.Bitmap]::FromFile($p); $b.Save([System.IO.Path]::ChangeExtension($p,".bmp"),[System.Drawing.Imaging.ImageFormat]::Bmp); $b.Dispose() }
 ```
-Add-Type -AssemblyName System.Drawing; Get-ChildItem *.png | ForEach-Object { $b=[System.Drawing.Bitmap]::FromFile($_); $m=New-Object System.Drawing.Bitmap $b.Width,$b.Height,[System.Drawing.Imaging.PixelFormat]::Format1bppIndexed; $g=[System.Drawing.Graphics]::FromImage($m); $g.DrawImage($b,0,0); $m.Save("$($_.BaseName).bmp",[System.Drawing.Imaging.ImageFormat]::Bmp); $g.Dispose(); $b.Dispose(); $m.Dispose() }
-```
+
 
