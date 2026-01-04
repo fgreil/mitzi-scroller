@@ -57,6 +57,12 @@
 #define MAP_WIDTH (TILE_COLS * TILE_WIDTH)      // Map width: 640px
 #define MAP_HEIGHT (TILE_ROWS * TILE_HEIGHT)    // Map height: 640px
 
+// Camera bounds (allow scrolling beyond edges to reach all map pixels)
+#define CAMERA_MIN_X (-(SCREEN_WIDTH / 2))      // Can scroll 64px left of map
+#define CAMERA_MAX_X (MAP_WIDTH - SCREEN_WIDTH / 2) // Can scroll 64px right of map
+#define CAMERA_MIN_Y (-(SCREEN_HEIGHT / 2))     // Can scroll 32px above map
+#define CAMERA_MAX_Y (MAP_HEIGHT - SCREEN_HEIGHT / 2) // Can scroll 32px below map
+
 // Cursor settings
 #define CURSOR_RADIUS 4                         // Cursor circle radius (8px diameter)
 
@@ -106,6 +112,10 @@ typedef struct {
     // Current selection state
     char current_annotation[MAX_ANNOTATION_LENGTH]; // Currently displayed star name
     bool has_annotation;                        // True if cursor is over a star
+    
+    // Current tile (for preview)
+    int current_tile;                           // Tile number under cursor
+    bool show_tile_name;                        // Toggle for tile name display
 } ScrollerState;
 
 /* ============================================================================
@@ -188,10 +198,10 @@ static bool draw_tile_bmp(Canvas* canvas, int tile_num, int x, int y) {
                 int row_size = ((width + 31) / 32) * 4;
                 FURI_LOG_I("Scroller", "Row size: %d bytes", row_size);
                 
-                // BMP stores rows bottom-to-top, so we read in reverse
+                // Read rows top-to-bottom (0 to height-1) to fix vertical flip
                 uint8_t row_buffer[row_size];
                 
-                for(int row = height - 1; row >= 0; row--) {
+                for(int row = 0; row < height; row++) {
                     if(storage_file_read(file, row_buffer, row_size) == (size_t)row_size) {
                         // Draw pixels for this row
                         for(int col = 0; col < width; col++) {
@@ -199,8 +209,8 @@ static bool draw_tile_bmp(Canvas* canvas, int tile_num, int x, int y) {
                             int bit_idx = 7 - (col % 8);
                             bool pixel = (row_buffer[byte_idx] >> bit_idx) & 1;
                             
-                            // Draw pixel (1 = black in monochrome BMP)
-                            if(pixel) {
+                            // Draw pixel (INVERTED: 0 = black, 1 = white in this BMP)
+                            if(!pixel) {
                                 canvas_draw_dot(canvas, x + col, y + row);
                             }
                         }
@@ -356,6 +366,13 @@ static void check_annotations(ScrollerState* state) {
     // Calculate tile number
     int cursor_tile_num = row_col_to_tile_num(cursor_tile_row, cursor_tile_col);
     
+    // Store current tile for preview
+    if(cursor_tile_num >= 0 && cursor_tile_num < TOTAL_TILES) {
+        state->current_tile = cursor_tile_num;
+    } else {
+        state->current_tile = -1;
+    }
+    
     // Bounds check
     if(cursor_tile_num < 0 || cursor_tile_num >= TOTAL_TILES) return;
     
@@ -436,6 +453,23 @@ static void scroller_draw_callback(Canvas* canvas, void* ctx) {
     canvas_set_color(canvas, ColorBlack);
     canvas_draw_circle(canvas, SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2, CURSOR_RADIUS);
     
+    // Draw current tile filename in top right corner (if enabled)
+    if(state->current_tile >= 0 && state->show_tile_name) {
+        char tile_filename[16];  // Increased size to avoid truncation warning
+        snprintf(tile_filename, sizeof(tile_filename), "%02d.bmp", state->current_tile);
+        
+        canvas_set_font(canvas, FontSecondary);
+        int text_width = canvas_string_width(canvas, tile_filename);
+        
+        // Draw black background box
+        canvas_set_color(canvas, ColorBlack);
+        canvas_draw_box(canvas, SCREEN_WIDTH - text_width - 4, 0, text_width + 4, 10);
+        
+        // Draw white text
+        canvas_set_color(canvas, ColorWhite);
+        canvas_draw_str(canvas, SCREEN_WIDTH - text_width - 2, 8, tile_filename);
+    }
+    
     // Draw annotation if present
     if(state->has_annotation) {
         canvas_set_font(canvas, FontSecondary);
@@ -482,6 +516,8 @@ int32_t scroller_main(void* p) {
     // Initialize camera to center
     state->camera_x = (MAP_WIDTH - SCREEN_WIDTH) / 2.0f;
     state->camera_y = (MAP_HEIGHT - SCREEN_HEIGHT) / 2.0f;
+    state->current_tile = -1;
+    state->show_tile_name = false;
     
     // Load annotations
     Storage* storage = furi_record_open(RECORD_STORAGE);
@@ -515,26 +551,74 @@ int32_t scroller_main(void* p) {
             if(event.type == InputTypePress || event.type == InputTypeRepeat) {
                 switch(event.key) {
                     case InputKeyUp:
-                        state->camera_y -= move_speed;
-                        if(state->camera_y < 0) state->camera_y = 0;
+                        if(event.type == InputTypePress) {
+                            // Short press: smooth scroll
+                            state->camera_y -= move_speed;
+                            if(state->camera_y < CAMERA_MIN_Y) state->camera_y = CAMERA_MIN_Y;
+                        } else {
+                            // Long press: jump to next tile center up
+                            int current_row = (int)((state->camera_y + SCREEN_HEIGHT / 2) / TILE_HEIGHT);
+                            if(current_row > 0) {
+                                int target_row = current_row - 1;
+                                state->camera_y = target_row * TILE_HEIGHT + TILE_HEIGHT / 2 - SCREEN_HEIGHT / 2;
+                                if(state->camera_y < CAMERA_MIN_Y) state->camera_y = CAMERA_MIN_Y;
+                            }
+                        }
                         break;
                         
                     case InputKeyDown:
-                        state->camera_y += move_speed;
-                        if(state->camera_y > MAP_HEIGHT - SCREEN_HEIGHT) {
-                            state->camera_y = MAP_HEIGHT - SCREEN_HEIGHT;
+                        if(event.type == InputTypePress) {
+                            // Short press: smooth scroll
+                            state->camera_y += move_speed;
+                            if(state->camera_y > CAMERA_MAX_Y) {
+                                state->camera_y = CAMERA_MAX_Y;
+                            }
+                        } else {
+                            // Long press: jump to next tile center down
+                            int current_row = (int)((state->camera_y + SCREEN_HEIGHT / 2) / TILE_HEIGHT);
+                            if(current_row < TILE_ROWS - 1) {
+                                int target_row = current_row + 1;
+                                state->camera_y = target_row * TILE_HEIGHT + TILE_HEIGHT / 2 - SCREEN_HEIGHT / 2;
+                                if(state->camera_y > CAMERA_MAX_Y) {
+                                    state->camera_y = CAMERA_MAX_Y;
+                                }
+                            }
                         }
                         break;
                         
                     case InputKeyLeft:
-                        state->camera_x -= move_speed;
-                        if(state->camera_x < 0) state->camera_x = 0;
+                        if(event.type == InputTypePress) {
+                            // Short press: smooth scroll
+                            state->camera_x -= move_speed;
+                            if(state->camera_x < CAMERA_MIN_X) state->camera_x = CAMERA_MIN_X;
+                        } else {
+                            // Long press: jump to next tile center left
+                            int current_col = (int)((state->camera_x + SCREEN_WIDTH / 2) / TILE_WIDTH);
+                            if(current_col > 0) {
+                                int target_col = current_col - 1;
+                                state->camera_x = target_col * TILE_WIDTH + TILE_WIDTH / 2 - SCREEN_WIDTH / 2;
+                                if(state->camera_x < CAMERA_MIN_X) state->camera_x = CAMERA_MIN_X;
+                            }
+                        }
                         break;
                         
                     case InputKeyRight:
-                        state->camera_x += move_speed;
-                        if(state->camera_x > MAP_WIDTH - SCREEN_WIDTH) {
-                            state->camera_x = MAP_WIDTH - SCREEN_WIDTH;
+                        if(event.type == InputTypePress) {
+                            // Short press: smooth scroll
+                            state->camera_x += move_speed;
+                            if(state->camera_x > CAMERA_MAX_X) {
+                                state->camera_x = CAMERA_MAX_X;
+                            }
+                        } else {
+                            // Long press: jump to next tile center right
+                            int current_col = (int)((state->camera_x + SCREEN_WIDTH / 2) / TILE_WIDTH);
+                            if(current_col < TILE_COLS - 1) {
+                                int target_col = current_col + 1;
+                                state->camera_x = target_col * TILE_WIDTH + TILE_WIDTH / 2 - SCREEN_WIDTH / 2;
+                                if(state->camera_x > CAMERA_MAX_X) {
+                                    state->camera_x = CAMERA_MAX_X;
+                                }
+                            }
                         }
                         break;
                         
@@ -543,6 +627,9 @@ int32_t scroller_main(void* p) {
                         break;
                         
                     case InputKeyOk:
+                        // Toggle tile name display
+                        state->show_tile_name = !state->show_tile_name;
+                        
                         if(state->has_annotation) {
                             FURI_LOG_I("Scroller", "Selected: %s", state->current_annotation);
                         }
